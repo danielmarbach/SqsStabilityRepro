@@ -32,7 +32,6 @@ namespace SqsRepro
             ServicePointManager.DefaultConnectionLimit =
                 DefaultConnectionLimit; // Querying of DefaultConnectionLimit on dotnet core does not return assigned value
 
-            Task ret;
             var client = new AmazonSQSClient(new AmazonSQSConfig
             {
                 RegionEndpoint = RegionEndpoint.EUCentral1,
@@ -56,7 +55,6 @@ namespace SqsRepro
                 if (sending)
                 {
                     var cts = new CancellationTokenSource();
-                    cts.CancelAfter(TimeSpan.FromMinutes(5));
                     var sends = new List<Task>();
 
                     var sessionId = DateTime.UtcNow.ToString("s");
@@ -70,9 +68,7 @@ namespace SqsRepro
                         for (var i = 0; i < batchSize; i++)
                         {
                             var id = $"{sessionId}/{++count:D8}";
-                            sends.Add(RetryWithBackoff(
-                                () => client.SendMessageAsync(new SendMessageRequest(queueUrl, $"{id}"), cts.Token),
-                                cts.Token, id, 5));
+                            sends.Add(Item(client, queueUrl, id, cts));
                         }
                         try
                         {
@@ -97,6 +93,21 @@ namespace SqsRepro
             cancellationTokenSource.Cancel();
 
             client.Dispose();
+        }
+
+        private static async Task Item(AmazonSQSClient client, string queueUrl, string id, CancellationTokenSource cts)
+        {
+            try
+            {
+                await RetryWithBackoff(
+                    () => client.SendMessageAsync(new SendMessageRequest(queueUrl, $"{id}"), cts.Token),
+                    cts.Token, id, 5);
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"FAILED RETRY {e.Message}");
+                //throw;
+            }
         }
 
         private static async Task ConsumeMessage(IAmazonSQS sqsClient, string queueUrl, int pumpNumber,
@@ -169,7 +180,7 @@ namespace SqsRepro
                     var delay = TimeSpan
                         .FromMilliseconds(
                             next); // Results in 100ms, 200ms, 400ms, 800ms, etc. including max 20% random jitter.
-                    await Console.Out.WriteLineAsync($"{id}: #{attempts} {ex.Message}").ConfigureAwait(false);
+                    await Console.Out.WriteLineAsync($"RETRY {id}: #{attempts} {ex.Message}").ConfigureAwait(false);
                     await Task.Delay(delay, token)
                         .ConfigureAwait(false);
                 }
